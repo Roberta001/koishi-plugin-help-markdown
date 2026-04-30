@@ -110,6 +110,12 @@ function getCommandPluginName(cmd: Command, config: Config): string {
 
 function formatMqqapi(enableMqqapi: boolean, commandStr: string, text: string) {
   if (enableMqqapi) {
+    if (commandStr.endsWith(' -h')) {
+      const baseStr = commandStr.slice(0, -3)
+      const baseCmd = encodeURIComponent(baseStr + ' ')
+      const helpCmd = encodeURIComponent(commandStr)
+      return `[${text}](mqqapi://aio/inlinecmd?command=${baseCmd}&enter=false&reply=false) [ [-h] ](mqqapi://aio/inlinecmd?command=${helpCmd}&enter=true&reply=false)`
+    }
     return `[${text}](mqqapi://aio/inlinecmd?command=${encodeURIComponent(commandStr)}&enter=true&reply=false)`
   }
   return text
@@ -179,25 +185,26 @@ export function apply(ctx: Context, config: Config) {
 
         let lines: string[] = []
         if (md) {
-          lines.push(`### 帮助菜单`)
+          lines.push(`## 帮助中心`)
+          lines.push(`欢迎使用机器人服务，以下为指令列表：`)
         } else {
           lines.push(`帮助菜单`)
         }
 
         for (const [pluginName, cmds] of groups) {
           lines.push('')
-          lines.push(md ? `**[${pluginName}]**` : `[${pluginName}]`)
+          lines.push(md ? `### [ ${pluginName} ]` : `[${pluginName}]`)
           for (const cmd of cmds) {
             let desc = session.text([`commands.${cmd.name}.description`, ''], cmd.config.params) || ''
             let cmdName = prefix + cmd.displayName.replace(/\./g, ' ')
             let runCmdStr = prefix ? `${prefix}${cmd.name} -h` : `/${cmd.name} -h`
             
-            let descPart = desc ? ` ${desc}` : ''
+            let descPart = desc ? `  ${desc}` : ''
             if (enableMqqapi) {
               const inline = formatMqqapi(enableMqqapi, runCmdStr, cmdName)
-              lines.push(md ? `* ${inline}${descPart}` : `* ${cmdName}${descPart}`)
+              lines.push(md ? `- ${inline}${descPart}` : `* ${cmdName}${descPart}`)
             } else {
-              lines.push(md ? `* \`${cmdName}\`${descPart}` : `  ${cmdName}${descPart}`)
+              lines.push(md ? `- \`${cmdName}\`${descPart}` : `  ${cmdName}${descPart}`)
             }
           }
         }
@@ -236,29 +243,39 @@ export function apply(ctx: Context, config: Config) {
 
       let output: string[] = []
       const title = command.displayName.replace(/\./g, ' ') + (command.declaration || '')
-      output.push(md ? `### 指令: ${title}` : `指令: ${title}`)
+      output.push(md ? `### 指令：${title}` : `指令: ${title}`)
       
       const description = session.text([`commands.${command.name}.description`, ''], command.config.params)
       if (description) {
         output.push(md ? `> ${description}` : description)
-        output.push('')
       }
+      output.push('')
 
       if (Object.keys(command._aliases).length > 1) {
         const aliases = Array.from(Object.keys(command._aliases).slice(1)).join('，')
-        output.push(md ? `**别名**: ${aliases}` : `别名: ${aliases}`)
+        output.push(md ? `**别名**：${aliases}` : `别名: ${aliases}`)
+        output.push('')
       }
 
-      output.push(md ? '**用法**:' : '用法:')
+      output.push(md ? '**用法**：' : '用法:')
       if (command._usage) {
         const usageText = typeof command._usage === 'string' ? command._usage : await command._usage(session)
-        output.push(md ? `\`\`\`\n${usageText}\n\`\`\`` : usageText)
+        const lines = usageText.split('\n')
+        for (const line of lines) {
+          output.push(md ? `\`${line}\`` : line)
+          if (md) output.push('')
+        }
       } else {
         const textOption = session.text([`commands.${command.name}.usage`, ''], command.config.params)
         if (textOption) {
-          output.push(md ? `\`\`\`\n${textOption}\n\`\`\`` : textOption)
+          const lines = textOption.split('\n')
+          for (const line of lines) {
+            output.push(md ? `\`${line}\`` : line)
+            if (md) output.push('')
+          }
         } else {
           output.push(md ? `\`${prefix}${command.displayName}\`` : `${prefix}${command.displayName}`)
+          if (md) output.push('')
         }
       }
 
@@ -268,12 +285,12 @@ export function apply(ctx: Context, config: Config) {
       
       if (commandOptions.length) {
         output.push('')
-        output.push(md ? '**可用参数**:' : '可用参数:')
+        output.push(md ? '**可用参数**：' : '可用参数:')
         for (const option of commandOptions) {
           function pushOption(opt: any, name: string) {
             let lineItem = md ? `- \`${opt.syntax}\`` : `  ${opt.syntax}`
             const optDesc = session.text(opt.descPath ?? [`commands.${command.name}.options.${name}`, ''], opt.params)
-            if (optDesc) lineItem += `  ${optDesc}`
+            if (optDesc) lineItem += md ? `  ${optDesc}` : `  ${optDesc}`
             output.push(lineItem)
           }
           if (!('value' in option)) pushOption(option, option.name)
@@ -285,37 +302,37 @@ export function apply(ctx: Context, config: Config) {
 
       if (command.children.length) {
         output.push('')
-        output.push(md ? '**子指令/副指令**:' : '子指令/副指令:')
+        output.push(md ? '**子指令**：' : '子指令/副指令:')
         const validChildren = await getVisibleCommands(session, command.children, options.showHidden)
         for (const child of validChildren) {
           let desc = session.text([`commands.${child.name}.description`, ''], child.config.params) || ''
           let cmdName = prefix + child.displayName.replace(/\./g, ' ')
           let runCmdStr = prefix ? `${prefix}${child.name} -h` : `/${child.name} -h`
 
-          let descPart = desc ? ` ${desc}` : ''
+          let descPart = desc ? `  ${desc}` : ''
           if (enableMqqapi) {
             const inline = formatMqqapi(enableMqqapi, runCmdStr, cmdName)
-            output.push(md ? `* ${inline}${descPart}` : `* ${cmdName}${descPart}`)
+            output.push(md ? `- ${inline}${descPart}` : `* ${cmdName}${descPart}`)
           } else {
-            output.push(md ? `* \`${cmdName}\`${descPart}` : `  ${cmdName}${descPart}`)
+            output.push(md ? `- \`${cmdName}\`${descPart}` : `  ${cmdName}${descPart}`)
           }
         }
       }
 
       if (command._examples.length) {
         output.push('')
-        output.push(md ? '**示例**:' : '示例:')
-        output.push(...command._examples.map(ex => md ? `> ${ex}` : `  ${ex}`))
+        output.push(md ? '**示例**：' : '示例:')
+        output.push(...command._examples.map(ex => md ? `- \`${ex}\`` : `  ${ex}`))
       } else {
         const text = session.text([`commands.${command.name}.examples`, ''], command.config.params)
         if (text) {
           output.push('')
-          output.push(md ? '**示例**:' : '示例:')
-          output.push(...text.split('\n').map(line => md ? `> ${line}` : `  ${line}`))
+          output.push(md ? '**示例**：' : '示例:')
+          output.push(...text.split('\n').map(line => md ? `- \`${line}\`` : `  ${line}`))
         }
       }
 
-      const out = await sendTextOrMarkdown(session, config, output.filter(Boolean).join('\n'))
+      const out = await sendTextOrMarkdown(session, config, output.join('\n'))
       if (out) return out
     })
 }
