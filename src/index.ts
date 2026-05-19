@@ -227,7 +227,44 @@ export function apply(ctx: Context, config: Config) {
       // 单个子指令帮助
       const command = ctx.$commander.resolve(target, session)
       if (!command) {
-        let notFoundMsg = `找不到指令：${target}`
+        // 尝试按 category / pluginName 查找
+        const globalCommands = ctx.$commander._commandList.filter(cmd => cmd.parent === null)
+        const validCommands = await getVisibleCommands(session, globalCommands, options.showHidden)
+        
+        const matchedCommands = validCommands.filter(cmd => {
+          const rawPluginName = cmd.ctx && cmd.ctx.name ? cmd.ctx.name : '未分类'
+          const displayPluginName = getCommandPluginName(cmd, config)
+          return displayPluginName === target || rawPluginName === target
+        })
+
+        if (matchedCommands.length > 0) {
+          let lines: string[] = []
+          if (md) {
+            lines.push(`### [ ${target} ]`)
+          } else {
+            lines.push(`[${target}]`)
+          }
+          
+          for (const cmd of matchedCommands) {
+            let desc = session.text([`commands.${cmd.name}.description`, ''], cmd.config.params) || ''
+            let cmdName = prefix + cmd.displayName.replace(/\./g, ' ')
+            let runCmdStr = prefix ? `${prefix}${cmd.name} -h` : `/${cmd.name} -h`
+            
+            let descPart = desc ? `  ${desc}` : ''
+            if (enableMqqapi) {
+              const inline = formatMqqapi(enableMqqapi, runCmdStr, cmdName)
+              lines.push(md ? `- ${inline}${descPart}` : `* ${cmdName}${descPart}`)
+            } else {
+              lines.push(md ? `- \`${cmdName}\`${descPart}` : `  ${cmdName}${descPart}`)
+            }
+          }
+          
+          const out = await sendTextOrMarkdown(session, config, lines.join('\n'))
+          if (out) return out
+          return
+        }
+
+        let notFoundMsg = `找不到指令或分类：${target}`
         const out = await sendTextOrMarkdown(session, config, notFoundMsg)
         if (out) return out
         return
