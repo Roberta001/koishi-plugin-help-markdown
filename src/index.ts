@@ -21,12 +21,61 @@ declare module 'koishi' {
 
 export const name = 'help-markdown'
 
+export interface MarkdownButtonConfig {
+  type?: 'command' | 'url'
+  label: string
+  visitedLabel?: string
+  style?: 0 | 1
+  command?: string
+  url?: string
+  enter?: boolean
+  reply?: boolean
+  unsupportTips?: string
+  row?: number
+}
+
+export interface MarkdownCommandConfig {
+  name: string
+  aliases: string[]
+  markdown: string
+  buttons: MarkdownButtonConfig[]
+}
+
+const CommonButtonSchema = {
+  type: Schema.union([
+    Schema.const('command').description('指令按钮'),
+    Schema.const('url').description('链接按钮'),
+  ]).default('command').description('按钮类型'),
+  label: Schema.string().required().description('按钮文字'),
+  visitedLabel: Schema.string().description('点击后的按钮文字'),
+  style: Schema.union([Schema.const(0), Schema.const(1)]).default(0).description('按钮样式：0 灰色，1 蓝色'),
+  unsupportTips: Schema.string().default('当前客户端暂不支持该按钮').description('客户端不支持时的提示'),
+  row: Schema.number().role('slider').min(1).max(5).step(1).default(1).description('按钮所在行，相同行号会排在同一行'),
+}
+
+const ButtonSchema = Schema.intersect([
+  Schema.object(CommonButtonSchema),
+  Schema.union([
+    Schema.object({
+      type: Schema.const('command'),
+      command: Schema.string().required().description('指令按钮对应的指令内容'),
+      enter: Schema.boolean().default(true).description('是否自动发送指令'),
+      reply: Schema.boolean().default(false).description('是否携带回复态发送'),
+    }),
+    Schema.object({
+      type: Schema.const('url'),
+      url: Schema.string().required().description('URL 按钮对应的链接地址'),
+    }),
+  ]),
+])
+
 export interface Config {
   enableQQNativeMarkdown: boolean
   enableQQInlineCmd: boolean
   filterMode: 'blacklist' | 'whitelist'
   pluginList: string[]
   pluginNameMapping: Record<string, string>
+  markdownCommands: MarkdownCommandConfig[]
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -35,6 +84,12 @@ export const Config: Schema<Config> = Schema.object({
   filterMode: Schema.union(['blacklist', 'whitelist']).default('blacklist').description('过滤模式：黑名单（排除指定插件）或白名单（仅包含指定插件）'),
   pluginList: Schema.array(String).default(['help-markdown']).description('黑名单或白名单的插件 ID / 插件名列表（默认为排除自己）'),
   pluginNameMapping: Schema.dict(String).default({}).description('给插件配置外显名映射（键为插件原始名/ID，值为外显名）'),
+  markdownCommands: Schema.array(Schema.object({
+    name: Schema.string().required().description('要注册的指令名，例如 rules'),
+    aliases: Schema.array(String).default([]).description('指令别名列表'),
+    markdown: Schema.string().role('textarea').required().description('指令执行后发送的 Markdown 内容'),
+    buttons: Schema.array(ButtonSchema).default([]).description('QQ 原生 Markdown 附带按钮，仅 QQ 平台生效'),
+  })).default([]).description('自定义 Markdown 指令列表'),
 })
 
 interface QQSendMessageRequest {
@@ -43,6 +98,27 @@ interface QQSendMessageRequest {
   msg_id?: string
   msg_seq?: number
   markdown: { content: string }
+  keyboard?: {
+    content: {
+      rows: Array<{
+        buttons: Array<{
+          render_data: {
+            label: string
+            visited_label: string
+            style: 0 | 1
+          }
+          action: {
+            type: 0 | 2
+            permission: { type: 2 }
+            data: string
+            enter: boolean
+            reply: boolean
+            unsupport_tips: string
+          }
+        }>
+      }>
+    }
+  }
 }
 
 interface QQSessionBridge {
@@ -50,7 +126,51 @@ interface QQSessionBridge {
   sendPrivateMessage(openid: string, data: QQSendMessageRequest): Promise<unknown>
 }
 
-async function sendTextOrMarkdown(session: any, config: Config, text: string): Promise<string> {
+function createQQKeyboard(buttons: MarkdownButtonConfig[]) {
+  if (!buttons.length) return undefined
+
+  const rowMap = new Map<number, MarkdownButtonConfig[]>()
+  for (const button of buttons) {
+    const row = button.row && button.row > 0 ? button.row : 1
+    if (!rowMap.has(row)) rowMap.set(row, [])
+    rowMap.get(row)!.push(button)
+  }
+
+  return {
+    content: {
+      rows: Array.from(rowMap.entries())
+        .sort((a, b) => a[0] - b[0])
+        .map(([, rowButtons]) => ({
+          buttons: rowButtons.map(button => ({
+            render_data: {
+              label: button.label,
+              visited_label: button.visitedLabel || button.label,
+              style: button.style ?? 0,
+            },
+            action: button.type === 'url'
+              ? {
+                  type: 0 as const,
+                  permission: { type: 2 as const },
+                  data: button.url || '',
+                  enter: false,
+                  reply: false,
+                  unsupport_tips: button.unsupportTips || '当前客户端暂不支持该按钮',
+                }
+              : {
+                  type: 2 as const,
+                  permission: { type: 2 as const },
+                  data: button.command || '',
+                  enter: button.enter ?? true,
+                  reply: button.reply ?? false,
+                  unsupport_tips: button.unsupportTips || '当前客户端暂不支持该按钮',
+                },
+          })),
+        })),
+    },
+  }
+}
+
+async function sendTextOrMarkdown(session: any, config: Config, text: string, buttons: MarkdownButtonConfig[] = []): Promise<string> {
   if (config.enableQQNativeMarkdown && session.platform === 'qq') {
     const internal = session.bot?.internal as QQSessionBridge | undefined
     if (internal) {
@@ -62,6 +182,7 @@ async function sendTextOrMarkdown(session: any, config: Config, text: string): P
         msg_id: session.messageId,
         msg_seq: msgSeq,
         markdown: { content: text },
+        keyboard: createQQKeyboard(buttons),
       }
       try {
         if (session.isDirect) {
@@ -76,6 +197,12 @@ async function sendTextOrMarkdown(session: any, config: Config, text: string): P
     }
   }
   return text
+}
+
+function normalizeMarkdownText(text: string) {
+  return text
+    .replace(/\\n/g, '\n')
+    .replace(/\\t/g, '\t')
 }
 
 function getCommands(session: Session, commands: Command[], showHidden = false): Command[] {
@@ -122,6 +249,22 @@ function formatMqqapi(enableMqqapi: boolean, commandStr: string, text: string) {
 }
 
 export function apply(ctx: Context, config: Config) {
+  const markdownHelp = config.markdownCommands.find(item => item.name.trim().split(/\s+/)[0] === 'help')
+
+  for (const item of config.markdownCommands) {
+    if (!item.name || !item.markdown) continue
+    if (item.name.trim().split(/\s+/)[0] === 'help') continue
+
+    const command = ctx.command(item.name, '发送 Markdown 消息', { authority: 0 })
+      .action(async ({ session }) => {
+        const out = await sendTextOrMarkdown(session, config, normalizeMarkdownText(item.markdown), item.buttons)
+        if (out) return out
+      })
+
+    const aliases = item.aliases.filter(Boolean)
+    if (aliases.length) command.alias(...aliases)
+  }
+
   function enableHelp(command: Command) {
     const prev = command[Context.current]
     command[Context.current] = ctx
@@ -155,8 +298,21 @@ export function apply(ctx: Context, config: Config) {
     }
   })
 
-  ctx.command('help [command:string]', '显示帮助信息', { authority: 0 })
-    .shortcut('帮助', { fuzzy: true })
+  const builtinHelp = ctx.command('help [command:string]', '显示帮助信息', { authority: 0 })
+
+  if (!markdownHelp) {
+    builtinHelp.shortcut('帮助', { fuzzy: true })
+  } else {
+    const aliases = markdownHelp.aliases.filter(Boolean)
+    if (aliases.length) builtinHelp.alias(...aliases)
+    builtinHelp.action(async ({ session, next }, target) => {
+      if (target) return next()
+      const out = await sendTextOrMarkdown(session, config, normalizeMarkdownText(markdownHelp.markdown), markdownHelp.buttons)
+      if (out) return out
+    }, true)
+  }
+
+  builtinHelp
     .option('showHidden', '-H 显示隐藏选项和指令')
     .action(async ({ session, options }, target) => {
       const isQQ = session.platform === 'qq' || session.bot?.platform === 'qq'
